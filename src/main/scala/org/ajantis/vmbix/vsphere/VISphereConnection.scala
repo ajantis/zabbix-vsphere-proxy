@@ -275,7 +275,7 @@ class VISphereConnection(credentials: VISphereConnCredentials) {
   }
 
   private def getDataStore(dsName: String): Option[Datastore] = {
-    val ds: Option[Datastore] = Option(getManagedEntityByName(dsName, Datastore).asInstanceOf[Datastore])
+    val ds: Option[Datastore] = getManagedEntityByName(dsName, Datastore).map(_.asInstanceOf[Datastore])
     if (ds.isEmpty)
       logger.error("Datastore named {} is not found", dsName)
     ds

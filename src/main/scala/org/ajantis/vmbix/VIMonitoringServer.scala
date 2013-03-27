@@ -4,15 +4,11 @@ import java.net.InetSocketAddress
 import io.netty.bootstrap.ServerBootstrap
 import io.netty.channel.socket.nio.NioServerSocketChannel
 import io.netty.channel._
-import io.netty.channel.socket.SocketChannel
-import io.netty.handler.timeout.{IdleStateEvent, IdleStateHandler}
-import io.netty.handler.codec.http._
 import io.netty.channel.ChannelHandler.Sharable
-import io.netty.handler.logging.{LogLevel, LoggingHandler}
 import nio.NioEventLoopGroup
 import org.slf4j.LoggerFactory
-import service.VISphereActorProtocol.VISphereActorCmd
-import service.VISphereManager
+import service.VISphereService
+import scopt.immutable.OptionParser
 
 /**
  * Copyright iFunSoftware 2013
@@ -20,15 +16,34 @@ import service.VISphereManager
  */
 object VIMonitoringServer {
   private val logger = LoggerFactory.getLogger("VIMonitoringServer")
+  private val programName = "Zabbix vSphere proxy"
+  private val programVersion = "1.0"
 
   def main(args: Array[String]) {
 
-    val addr = new InetSocketAddress("0.0.0.0", 8080)
+    val parser = new OptionParser[Config](programName, programVersion) {
+      def options = Seq(
+        intOpt("P", "port", "port to listen for Zabbix client connections") { (v: Int, c: Config) => c.copy(port = v) },
+        opt("s", "serviceurl", "url of vSphere web services endpoint") { (v: String, c: Config) => c.copy(vSphereUrl = v) },
+        opt("u", "username", "user with access to vSphere web services") { (v: String, c: Config) => c.copy(vSphereUser = v) },
+        opt("p", "password", "user's password") { (v: String, c: Config) => c.copy(vSpherePassword = v) }
+      )
+    }
+
+    parser.parse(args, Config()) map { config =>
+      startService(config)
+    } getOrElse {
+      // arguments are bad, usage message will have been displayed
+      System.exit(1)
+    }
+  }
+
+  private def startService(config: Config){
+    val addr = new InetSocketAddress("0.0.0.0", config.port)
     val srv = new ServerBootstrap()
-    val viSphereManager = new VISphereManager("https://localhost/sdk", "user", "password")
+    val viSphereManager = new VISphereService(config.vSphereUrl, config.vSphereUser, config.vSpherePassword)
 
     try {
-
       srv.group(new NioEventLoopGroup(), new NioEventLoopGroup())
         .channel(classOf[NioServerSocketChannel])
         .childHandler(new VMMonChannelInitializer(viSphereManager))
@@ -42,15 +57,16 @@ object VIMonitoringServer {
   }
 }
 
-case class Session(ctx: ChannelHandlerContext, cmd: VISphereActorCmd){
+case class Session(ctx: ChannelHandlerContext, query: String){
   val created = new java.util.Date
 }
 
+case class Config(port: Int = 8080, vSphereUrl: String = "https://localhost/sdk", vSphereUser: String = "", vSpherePassword: String = "")
+
 @Sharable
-class VIMonServerHandler(service: VISphereManager) extends ChannelInboundMessageHandlerAdapter[String]{
+class VIMonServerHandler(service: VISphereService) extends ChannelInboundMessageHandlerAdapter[String]{
 
   private val logger = LoggerFactory.getLogger(classOf[VIMonServerHandler])
-  private val decoder = new ZabbixCommandDecoder
 
   override def exceptionCaught(ctx: ChannelHandlerContext, t: Throwable){
     logger.error("Exception during context handling " + t.getMessage, t)
@@ -58,15 +74,6 @@ class VIMonServerHandler(service: VISphereManager) extends ChannelInboundMessage
   }
 
   override def messageReceived(ctx: ChannelHandlerContext, query: String) {
-    try {
-      val cmd = decoder.decode(query)
-      service.actor ! Session(ctx, cmd)
-
-    } catch {
-      case e: ZbxCommandDecodeException => {
-        val future = ctx.write(e.response)
-        future.addListener(ChannelFutureListener.CLOSE)
-      }
-    }
+    service.actor ! Session(ctx, query)
   }
 }
